@@ -8,7 +8,7 @@ class Thread: Scope {
 
     @Suppress("UNCHECKED_CAST")
     override fun <T : Any> getScoped(key: KClass<T>, provider: () -> T): T {
-        val local = values.getOrPut(key) { ThreadLocal<T>() }.get() as ThreadLocal<T>
+        val local = values.getOrPut(key) { ThreadLocal<T>() } as ThreadLocal<T>
         return local.getOrSet(provider)
     }
 

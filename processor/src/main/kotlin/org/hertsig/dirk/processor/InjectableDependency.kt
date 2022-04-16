@@ -1,12 +1,14 @@
 package org.hertsig.dirk.processor
 
+import com.google.devtools.ksp.symbol.KSValueParameter
 import com.squareup.kotlinpoet.ClassName
 
 data class InjectableDependency(
-    val name: String,
+    val declaration: KSValueParameter,
     val className: ClassName,
     val provider: Boolean = false,
     val assisted: Boolean = false,
-    val factoryFieldName: String? = null,
-    val factoryClassName: ClassName? = null,
-)
+    val factory: InjectableType? = null,
+) {
+    val name = declaration.name!!.asString()
+}

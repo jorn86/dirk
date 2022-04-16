@@ -6,6 +6,7 @@ import javax.inject.Provider
 @Injectable(CustomScope::class)
 class App(
     private val service: Service,
+    private val db: DbService,
     private val assistedTask: AssistedTaskFactory,
     private val task: Provider<Task>,
     private val task2: Task,
@@ -27,4 +28,6 @@ fun main() {
     val dirk = Dirk.create()
     dirk.getApp().run()
     println(dirk.assistedTaskFactory.get("Test"))
+    dirk.clearScopes()
+    dirk.getApp().run()
 }

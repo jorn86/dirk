@@ -1,32 +1,51 @@
-@file:OptIn(KspExperimental::class)
-
 package org.hertsig.dirk.processor
 
-import com.google.devtools.ksp.KspExperimental
-import com.google.devtools.ksp.getConstructors
-import com.google.devtools.ksp.isAnnotationPresent
 import com.google.devtools.ksp.symbol.KSClassDeclaration
+import com.google.devtools.ksp.symbol.KSDeclaration
+import com.google.devtools.ksp.symbol.KSFunctionDeclaration
+import com.google.devtools.ksp.symbol.KSValueParameter
 import com.squareup.kotlinpoet.ClassName
-import javax.inject.Inject
+import com.squareup.kotlinpoet.FunSpec
+import com.squareup.kotlinpoet.MemberName
 
-data class InjectableType(
-    val declaration: KSClassDeclaration,
-    val scopeType: ClassName,
-) {
-    val packageName = declaration.packageName.asString()
-    val typeName = declaration.simpleName.asString()
-    val className = ClassName(packageName, typeName)
-    val factoryTypeName = "${typeName}Factory"
-    val factoryFieldName = factoryTypeName.replaceFirstChar { it.lowercase() }
-    val factoryClassName = ClassName(packageName, factoryTypeName)
-    val getter = "get${typeName}"
+interface InjectableType {
+    val declaration: KSDeclaration
+    val type: ClassName
+    var dependencies: List<InjectableDependency>
+    val scope: ScopeType
 
-    val constructor = declaration.getConstructors().singleOrNull { it.isAnnotationPresent(Inject::class) }
-        ?: declaration.primaryConstructor
-        ?: throw IllegalStateException("@Injectable ${declaration.qualifiedName} must have a primary constructor or single constructor annotated with @Inject")
+    fun getterName() = "get${type.simpleName}"
+    fun factoryClass() = ClassName(type.packageName, "${type.simpleName}Factory")
+    fun factoryField() = factoryClass().simpleName.replaceFirstChar { it.lowercase() }
+    fun addInjectable(funSpec: FunSpec.Builder): FunSpec.Builder
+    fun anyAssisted() = dependencies.any { it.assisted }
+    fun unresolvedDependencies(): List<KSValueParameter>
+}
 
-    lateinit var dependencies: List<InjectableDependency>
+data class InjectableFunction(
+    override val declaration: KSFunctionDeclaration,
+    private val scopeType: ClassName,
+): InjectableType {
+    override val type = declaration.returnType!!.resolve().declaration.asClassName()
+    private val createFunction = MemberName(declaration.packageName.asString(), declaration.simpleName.asString())
 
-    val scope = ScopeType(scopeType)
-    val anyAssisted; get() = dependencies.any { it.assisted }
+    override lateinit var dependencies: List<InjectableDependency>
+    override val scope = ScopeType(scopeType)
+
+    override fun unresolvedDependencies() = declaration.parameters
+    override fun addInjectable(funSpec: FunSpec.Builder) = funSpec.addCode("%M(", createFunction)
+}
+
+data class InjectableClass(
+    override val declaration: KSClassDeclaration,
+    val constructor: KSFunctionDeclaration,
+    private val scopeType: ClassName,
+): InjectableType {
+    override val type = declaration.asClassName()
+    override lateinit var dependencies: List<InjectableDependency>
+
+    override val scope = ScopeType(scopeType)
+
+    override fun unresolvedDependencies() = constructor.parameters
+    override fun addInjectable(funSpec: FunSpec.Builder) = funSpec.addCode("%T(", type)
 }
