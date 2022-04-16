@@ -11,7 +11,7 @@ class App(
     private val task2: Task,
 ) {
     init {
-        println("App created with service ${service.hashCode()} from")
+        println("App created with service ${service.hashCode()} and task ${task2.hashCode()}")
 //        Throwable().printStackTrace()
     }
 

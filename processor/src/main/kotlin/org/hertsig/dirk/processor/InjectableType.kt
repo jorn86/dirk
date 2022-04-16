@@ -2,16 +2,12 @@
 
 package org.hertsig.dirk.processor
 
-import com.google.devtools.ksp.*
+import com.google.devtools.ksp.KspExperimental
+import com.google.devtools.ksp.getConstructors
+import com.google.devtools.ksp.isAnnotationPresent
 import com.google.devtools.ksp.symbol.KSClassDeclaration
 import com.squareup.kotlinpoet.ClassName
-import org.hertsig.dirk.Injectable
-import org.hertsig.dirk.scope.Scope
-import org.hertsig.dirk.scope.Singleton
-import org.hertsig.dirk.scope.Thread
-import org.hertsig.dirk.scope.Unscoped
 import javax.inject.Inject
-import kotlin.reflect.KClass
 
 data class InjectableType(
     val declaration: KSClassDeclaration,
@@ -34,12 +30,3 @@ data class InjectableType(
     val scope = ScopeType(scopeType)
     val anyAssisted; get() = dependencies.any { it.assisted }
 }
-
-data class InjectableDependency(
-    val name: String,
-    val className: ClassName,
-    val provider: Boolean = false,
-    val assisted: Boolean = false,
-    val factoryFieldName: String? = null,
-    val factoryClassName: ClassName? = null,
-)

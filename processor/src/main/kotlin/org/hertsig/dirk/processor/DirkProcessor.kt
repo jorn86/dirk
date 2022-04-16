@@ -1,6 +1,8 @@
 package org.hertsig.dirk.processor
 
-import com.google.devtools.ksp.*
+import com.google.devtools.ksp.KspExperimental
+import com.google.devtools.ksp.containingFile
+import com.google.devtools.ksp.isAnnotationPresent
 import com.google.devtools.ksp.processing.*
 import com.google.devtools.ksp.symbol.*
 import com.squareup.kotlinpoet.*
@@ -11,16 +13,14 @@ import org.hertsig.dirk.scope.Scope
 import javax.inject.Provider
 
 @OptIn(KspExperimental::class)
-class DirkProcessor(private val logger: KSPLogger, private val codeGenerator: CodeGenerator) : SymbolProcessor {
+class DirkProcessor(private val log: KSPLogger, private val generator: CodeGenerator) : SymbolProcessor {
     private lateinit var metadata: List<InjectableType>
     private lateinit var scopes: List<ScopeType>
 
     override fun process(resolver: Resolver): List<KSAnnotated> {
         val classes = resolver.getSymbolsWithAnnotation(Injectable::class.qualifiedName!!)
         val files = classes.mapNotNull { it.containingFile }.distinct()
-        metadata = classes
-            .mapNotNull { metaData(it) }
-            .toList()
+        metadata = classes.mapNotNull { metaData(it) }.toList()
         metadata.forEach {
             it.dependencies = it.constructor.parameters.mapNotNull { p -> it.resolveDependency(p) }
         }
@@ -36,15 +36,16 @@ class DirkProcessor(private val logger: KSPLogger, private val codeGenerator: Co
         val assisted = parameter.isAnnotationPresent(Assisted::class)
         var resolved = parameter.type.resolve()
         if (resolved.isError) {
-            // assume it's a generated factory
+            // assume it's a (not yet) generated factory
             val factory = metadata.singleOrNull { it.factoryTypeName == parameter.type.toString() }
             if (factory != null) {
                 return InjectableDependency(parameter.name!!.asString(), factory.className, true, false, factory.factoryFieldName, factory.factoryClassName)
             }
 
-            logger.warn("Unable to resolve type for parameter ${parameter.name?.asString()}", parameter)
+            log.error("Unable to resolve type for parameter ${parameter.name?.asString()}", parameter)
             return null
         }
+
         var target = resolved.declaration.asClassName()
         if (assisted) {
             return InjectableDependency(parameter.name!!.asString(), target, false, true)
@@ -63,7 +64,7 @@ class DirkProcessor(private val logger: KSPLogger, private val codeGenerator: Co
 
         val parameterType = metadata.singleOrNull { m -> m.className == target }
         if (parameterType == null) {
-            logger.error("Cannot find Factory for argument $parameter (${parameter.type}) of ${declaration.qualifiedName?.asString()}", parameter)
+            log.error("Cannot find Factory for argument $parameter (${parameter.type}) of ${declaration.qualifiedName?.asString()}", parameter)
             return null
         }
         return InjectableDependency(parameter.name!!.asString(), target, provider, false, parameterType.factoryFieldName, parameterType.factoryClassName)
@@ -71,7 +72,7 @@ class DirkProcessor(private val logger: KSPLogger, private val codeGenerator: Co
 
     private fun metaData(type: KSAnnotated): InjectableType? {
         if (type !is KSClassDeclaration) {
-            logger.error("@Injectable annotation can only be applied to classes", type)
+            log.error("@Injectable annotation can only be applied to classes", type)
             return null
         }
 
@@ -86,7 +87,7 @@ class DirkProcessor(private val logger: KSPLogger, private val codeGenerator: Co
             .addType(dirkType(packageName))
             .build()
         val dependencies = Dependencies(true, *files.toList().toTypedArray())
-        codeGenerator.createNewFile(dependencies, packageName, "Dirk").bufferedWriter().use {
+        generator.createNewFile(dependencies, packageName, "Dirk").bufferedWriter().use {
             file.writeTo(it)
         }
     }
@@ -135,7 +136,7 @@ class DirkProcessor(private val logger: KSPLogger, private val codeGenerator: Co
         val file = FileSpec.builder(type.packageName, type.factoryTypeName)
             .addType(factoryType(type))
             .build()
-        codeGenerator.createNewFile(Dependencies(false), type.packageName, type.factoryTypeName).bufferedWriter().use {
+        generator.createNewFile(Dependencies(false), type.packageName, type.factoryTypeName).bufferedWriter().use {
             file.writeTo(it)
         }
         return file
@@ -154,7 +155,7 @@ class DirkProcessor(private val logger: KSPLogger, private val codeGenerator: Co
 
         if (type.anyAssisted) {
             if (type.scope.fieldName != "unscopedScope") {
-                logger.error("Cannot use assisted injection with scoped injection", type.declaration)
+                log.error("Cannot use assisted injection with scoped injection", type.declaration)
             }
             factory.primaryConstructor(FunSpec.constructorBuilder().addModifiers(KModifier.INTERNAL).build())
             get.each(type.dependencies.filter { it.assisted }) {
@@ -183,13 +184,11 @@ class DirkProcessor(private val logger: KSPLogger, private val codeGenerator: Co
                 .addSuperinterface(Provider::class.asTypeName().parameterizedBy(type.className))
 
             get.addModifiers(KModifier.OVERRIDE)
-                .beginControlFlow("return %N.getScoped(%T::class)", "scope", type.className).addCode("%T(", type.className)
+                .beginControlFlow("return %N.getScoped(%T::class)", "scope", type.className)
+                .addCode("%T(", type.className)
                 .each(type.dependencies) {
-                    if (it.provider) {
-                        addCode("%N, ", it.factoryFieldName)
-                    } else {
-                        addCode("%N.get(), ", it.factoryFieldName)
-                    }
+                    val code = if (it.provider) "%N, " else "%N.get(), "
+                    addCode(code, it.factoryFieldName)
                 }
                 .addStatement(")")
                 .endControlFlow()
