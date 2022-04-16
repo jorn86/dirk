@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+
 plugins {
     kotlin("jvm")
 }
@@ -19,6 +21,10 @@ subprojects {
         implementation("com.google.guava:guava:31.0.1-jre")
 
         testImplementation("org.junit.jupiter:junit-jupiter:5.7.2")
+    }
+
+    tasks.withType<KotlinCompile> {
+        kotlinOptions.jvmTarget = "11"
     }
 
     tasks.named<Test>("test") {

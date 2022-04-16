@@ -1,4 +1,4 @@
-rootProject.name = "my-project"
+rootProject.name = "dirk"
 
-include("app")
-include("core")
+include("example")
+include("processor")
