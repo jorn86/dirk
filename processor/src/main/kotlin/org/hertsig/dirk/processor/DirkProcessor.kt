@@ -1,16 +1,16 @@
 package org.hertsig.dirk.processor
 
-import com.google.devtools.ksp.containingFile
+import com.google.devtools.ksp.*
 import com.google.devtools.ksp.processing.*
-import com.google.devtools.ksp.symbol.KSAnnotated
-import com.google.devtools.ksp.symbol.KSClassDeclaration
-import com.google.devtools.ksp.symbol.KSFile
+import com.google.devtools.ksp.symbol.*
 import com.squareup.kotlinpoet.*
 import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
+import org.hertsig.dirk.Assisted
 import org.hertsig.dirk.Injectable
 import org.hertsig.dirk.scope.Scope
 import javax.inject.Provider
 
+@OptIn(KspExperimental::class)
 class DirkProcessor(private val logger: KSPLogger, private val codeGenerator: CodeGenerator) : SymbolProcessor {
     private lateinit var metadata: List<InjectableType>
     private lateinit var scopes: List<ScopeType>
@@ -22,22 +22,7 @@ class DirkProcessor(private val logger: KSPLogger, private val codeGenerator: Co
             .mapNotNull { metaData(it) }
             .toList()
         metadata.forEach {
-            it.dependencies = it.constructor.parameters.mapNotNull { parameter ->
-                var resolved = parameter.type.resolve()
-                val provider = resolved.toString().startsWith("Provider<")
-                if (provider) {
-                    resolved = resolved.arguments.single().type!!.resolve()
-                }
-
-                val target = ClassName(resolved.declaration.packageName.asString(), resolved.declaration.simpleName.asString())
-                val parameterType = metadata.singleOrNull { m -> m.className == target }
-                if (parameterType == null) {
-                    logger.error("Cannot find Factory for argument $parameter (${parameter.type}) of ${it.declaration.qualifiedName?.asString()}", parameter)
-                    null
-                } else {
-                    InjectableDependency(provider, parameterType)
-                }
-            }
+            it.dependencies = it.constructor.parameters.mapNotNull { p -> it.resolveDependency(p) }
         }
         scopes = metadata.map { it.scope }.distinct()
         metadata.forEach(::generateFactory)
@@ -47,12 +32,52 @@ class DirkProcessor(private val logger: KSPLogger, private val codeGenerator: Co
         return listOf()
     }
 
+    private fun InjectableType.resolveDependency(parameter: KSValueParameter): InjectableDependency? {
+        val assisted = parameter.isAnnotationPresent(Assisted::class)
+        var resolved = parameter.type.resolve()
+        if (resolved.isError) {
+            // assume it's a generated factory
+            val factory = metadata.singleOrNull { it.factoryTypeName == parameter.type.toString() }
+            if (factory != null) {
+                return InjectableDependency(parameter.name!!.asString(), factory.className, true, false, factory.factoryFieldName, factory.factoryClassName)
+            }
+
+            logger.warn("Unable to resolve type for parameter ${parameter.name?.asString()}", parameter)
+            return null
+        }
+        var target = resolved.declaration.asClassName()
+        if (assisted) {
+            return InjectableDependency(parameter.name!!.asString(), target, false, true)
+        }
+
+        val factory = metadata.singleOrNull { it.factoryClassName == target }
+        if (factory != null) {
+            return InjectableDependency(parameter.name!!.asString(), target, true, false, factory.factoryFieldName, factory.factoryClassName)
+        }
+
+        val provider = resolved.toString().startsWith("Provider<")
+        if (provider) {
+            resolved = resolved.arguments.single().type!!.resolve()
+            target = resolved.declaration.asClassName()
+        }
+
+        val parameterType = metadata.singleOrNull { m -> m.className == target }
+        if (parameterType == null) {
+            logger.error("Cannot find Factory for argument $parameter (${parameter.type}) of ${declaration.qualifiedName?.asString()}", parameter)
+            return null
+        }
+        return InjectableDependency(parameter.name!!.asString(), target, provider, false, parameterType.factoryFieldName, parameterType.factoryClassName)
+    }
+
     private fun metaData(type: KSAnnotated): InjectableType? {
         if (type !is KSClassDeclaration) {
             logger.error("@Injectable annotation can only be applied to classes", type)
             return null
         }
-        return InjectableType(type)
+
+        val injectable = type.annotations.single { it.shortName.asString() == Injectable::class.simpleName!! }
+            .arguments.singleOrNull()?.value as? KSType
+        return InjectableType(type, injectable!!.declaration.asClassName())
     }
 
     private fun generateDirk(files: Sequence<KSFile>) {
@@ -70,20 +95,24 @@ class DirkProcessor(private val logger: KSPLogger, private val codeGenerator: Co
         .primaryConstructor(FunSpec.constructorBuilder().addModifiers(KModifier.PRIVATE).build())
         .each(scopes) { scope ->
             addProperty(PropertySpec
-                .builder(scope.fieldName, scope.type, KModifier.PRIVATE)
-                .initializer("%T()", scope.type)
+                .builder(scope.fieldName, scope.className, KModifier.PRIVATE)
+                .initializer("%T()", scope.className)
                 .build())
         }
         .each(metadata) {
-            addProperty(PropertySpec
-                .builder(it.factoryFieldName, it.factoryClassName, KModifier.PRIVATE)
-                .initializer("%T(%N)", it.factoryClassName, it.scope.fieldName)
-                .build())
+            val factory = PropertySpec.builder(it.factoryFieldName, it.factoryClassName)
+            if (it.anyAssisted) {
+                factory.initializer("%T()", it.factoryClassName)
+            } else {
+                factory.initializer("%T(%N)", it.factoryClassName, it.scope.fieldName)
 
-            addFunction(FunSpec.builder(it.getter)
-                .returns(it.className)
-                .addCode("return %N.get()", it.factoryFieldName)
-                .build())
+                addFunction(FunSpec.builder(it.getter)
+                    .returns(it.className)
+                    .addCode("return %N.get()", it.factoryFieldName)
+                    .build())
+            }
+
+            addProperty(factory.build())
         }
         .addFunction(FunSpec.builder("clearScopes")
             .each(scopes) { addStatement("%N.clear()", it.fieldName) }
@@ -93,8 +122,8 @@ class DirkProcessor(private val logger: KSPLogger, private val codeGenerator: Co
                 .returns(ClassName(packageName, "Dirk"))
                 .addStatement("val dirk = Dirk()")
                 .each(metadata) { field ->
-                    field.dependencies.forEach {
-                        addStatement("dirk.%N.%N = dirk.%N", field.factoryFieldName, it.parameter.factoryFieldName, it.parameter.factoryFieldName)
+                    field.dependencies.filter { !it.assisted }.forEach {
+                        addStatement("dirk.%N.%N = dirk.%N", field.factoryFieldName, it.factoryFieldName!!, it.factoryFieldName)
                     }
                 }
                 .addStatement("return dirk")
@@ -112,34 +141,63 @@ class DirkProcessor(private val logger: KSPLogger, private val codeGenerator: Co
         return file
     }
 
-    private fun factoryType(type: InjectableType) = TypeSpec.classBuilder(type.factoryClassName)
-        .primaryConstructor(FunSpec.constructorBuilder().addParameter("scope", Scope::class).build())
-        .addProperty(PropertySpec.builder("scope", Scope::class, KModifier.PRIVATE)
-            .initializer("scope")
-            .build())
-        .addModifiers(KModifier.INTERNAL)
-        .addSuperinterface(Provider::class.asTypeName().parameterizedBy(type.className))
-        .each(type.dependencies) {
-            val target = it.parameter
-            addProperty(PropertySpec
-                .builder(target.factoryFieldName, target.factoryClassName, KModifier.INTERNAL, KModifier.LATEINIT)
-                .mutable()
-                .build())
-        }
-        .addFunction(FunSpec.builder("get")
-            .addModifiers(KModifier.OVERRIDE)
-            .addCode("return %N.getScoped(%T::class) { %T(", "scope", type.className, type.className)
-            .each(type.dependencies) {
-                if (it.provider) {
-                    addCode("%N,", it.parameter.factoryFieldName)
-                } else {
-                    addCode("%N.get(),", it.parameter.factoryFieldName)
-                }
+    private fun factoryType(type: InjectableType): TypeSpec {
+        val factory = TypeSpec.classBuilder(type.factoryClassName)
+            .each(type.dependencies.filter { !it.assisted }.distinctBy { it.factoryClassName }) {
+                addProperty(PropertySpec
+                    .builder(it.factoryFieldName!!, it.factoryClassName!!, KModifier.INTERNAL, KModifier.LATEINIT)
+                    .mutable()
+                    .build())
             }
-            .addStatement(") }")
-            .returns(type.className)
-            .build())
-        .build()
+
+        val get = FunSpec.builder("get").returns(type.className)
+
+        if (type.anyAssisted) {
+            if (type.scope.fieldName != "unscopedScope") {
+                logger.error("Cannot use assisted injection with scoped injection", type.declaration)
+            }
+            factory.primaryConstructor(FunSpec.constructorBuilder().addModifiers(KModifier.INTERNAL).build())
+            get.each(type.dependencies.filter { it.assisted }) {
+                    addParameter(it.name, it.className)
+                }
+                .addCode("return %T(", type.className)
+                .each(type.dependencies) {
+                    if (it.assisted) {
+                        addCode("%N, ", it.name)
+                    } else if (it.provider) {
+                        addCode("%N, ", it.factoryFieldName)
+                    } else {
+                        addCode("%N.get(), ", it.factoryFieldName)
+                    }
+                }
+                .addStatement(")")
+        } else {
+            factory
+                .primaryConstructor(FunSpec.constructorBuilder()
+                    .addModifiers(KModifier.INTERNAL)
+                    .addParameter("scope", Scope::class)
+                    .build())
+                .addProperty(PropertySpec.builder("scope", Scope::class, KModifier.PRIVATE)
+                    .initializer("scope")
+                    .build())
+                .addSuperinterface(Provider::class.asTypeName().parameterizedBy(type.className))
+
+            get.addModifiers(KModifier.OVERRIDE)
+                .beginControlFlow("return %N.getScoped(%T::class)", "scope", type.className).addCode("%T(", type.className)
+                .each(type.dependencies) {
+                    if (it.provider) {
+                        addCode("%N, ", it.factoryFieldName)
+                    } else {
+                        addCode("%N.get(), ", it.factoryFieldName)
+                    }
+                }
+                .addStatement(")")
+                .endControlFlow()
+        }
+
+        val getter = get.build()
+        return factory.addFunction(getter).build()
+    }
 }
 
 private inline fun <R, T> R.each(elements: Iterable<T>, block: R.(T) -> Unit): R = apply { elements.forEach { block(it) } }

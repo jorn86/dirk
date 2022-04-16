@@ -1,20 +1,30 @@
 package org.hertsig.app
 
 import org.hertsig.dirk.Injectable
-import org.hertsig.dirk.scope.Unscoped
 import javax.inject.Provider
 
 @Injectable
-class App(private val service: Service, private val task: Provider<Task>) {
+class App(
+    private val service: Service,
+    private val assistedTask: AssistedTaskFactory,
+    private val task: Provider<Task>,
+    private val task2: Task,
+) {
     init {
         println("App created with service ${service.hashCode()} from")
 //        Throwable().printStackTrace()
     }
 
     fun run() {
-        println("${task.get().hashCode()}")
-        println("${task.get().hashCode()}")
+        task.get()
+        assistedTask.get("One")
+        assistedTask.get("Two")
+        task.get()
     }
 }
 
-fun main() = Dirk.create().getApp().run()
+fun main() {
+    val dirk = Dirk.create()
+    dirk.getApp().run()
+    println(dirk.assistedTaskFactory.get("Test"))
+}

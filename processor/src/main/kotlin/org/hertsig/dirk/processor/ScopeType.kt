@@ -1,8 +1,7 @@
 package org.hertsig.dirk.processor
 
-import org.hertsig.dirk.scope.Scope
-import kotlin.reflect.KClass
+import com.squareup.kotlinpoet.ClassName
 
-data class ScopeType(val type: KClass<out Scope>) {
-    val fieldName = type.simpleName!!.replaceFirstChar { it.lowercase() } + "Scope"
+data class ScopeType(val className: ClassName) {
+    val fieldName = className.simpleName.replaceFirstChar { it.lowercase() } + "Scope"
 }

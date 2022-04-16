@@ -6,13 +6,16 @@ import com.google.devtools.ksp.*
 import com.google.devtools.ksp.symbol.KSClassDeclaration
 import com.squareup.kotlinpoet.ClassName
 import org.hertsig.dirk.Injectable
+import org.hertsig.dirk.scope.Scope
 import org.hertsig.dirk.scope.Singleton
 import org.hertsig.dirk.scope.Thread
 import org.hertsig.dirk.scope.Unscoped
 import javax.inject.Inject
+import kotlin.reflect.KClass
 
 data class InjectableType(
-    val declaration: KSClassDeclaration
+    val declaration: KSClassDeclaration,
+    val scopeType: ClassName,
 ) {
     val packageName = declaration.packageName.asString()
     val typeName = declaration.simpleName.asString()
@@ -28,17 +31,15 @@ data class InjectableType(
 
     lateinit var dependencies: List<InjectableDependency>
 
-    private val scopeType = try {
-        declaration.getAnnotationsByType(Injectable::class).single().scope
-    } catch (e: KSTypeNotPresentException) {
-        when (e.ksType.toString()) {
-            "Singleton" -> Singleton::class
-            "Thread" -> Thread::class
-            "Unscoped" -> Unscoped::class
-            else -> Unscoped::class
-        }
-    }
     val scope = ScopeType(scopeType)
+    val anyAssisted; get() = dependencies.any { it.assisted }
 }
 
-data class InjectableDependency(val provider: Boolean, val parameter: InjectableType)
+data class InjectableDependency(
+    val name: String,
+    val className: ClassName,
+    val provider: Boolean = false,
+    val assisted: Boolean = false,
+    val factoryFieldName: String? = null,
+    val factoryClassName: ClassName? = null,
+)
