@@ -3,7 +3,7 @@ package org.hertsig.app
 import org.hertsig.dirk.Injectable
 import javax.inject.Provider
 
-@Injectable
+@Injectable(CustomScope::class)
 class App(
     private val service: Service,
     private val assistedTask: AssistedTaskFactory,
