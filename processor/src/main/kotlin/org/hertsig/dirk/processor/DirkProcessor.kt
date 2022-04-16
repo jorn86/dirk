@@ -10,6 +10,7 @@ import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
 import org.hertsig.dirk.Assisted
 import org.hertsig.dirk.Injectable
 import org.hertsig.dirk.scope.Scope
+import org.hertsig.dirk.scope.Singleton
 import javax.inject.Provider
 
 @OptIn(KspExperimental::class)
@@ -18,7 +19,8 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
     private lateinit var scopes: List<ScopeType>
 
     override fun process(resolver: Resolver): List<KSAnnotated> {
-        val classes = resolver.getSymbolsWithAnnotation(Injectable::class.qualifiedName!!)
+        val classes = resolver.getSymbolsWithAnnotation(Injectable::class.qualifiedName!!) +
+                      resolver.getSymbolsWithAnnotation(javax.inject.Singleton::class.qualifiedName!!)
         val files = classes.mapNotNull { it.containingFile }.distinct()
         metadata = classes.mapNotNull { metaData(it) }.toList()
         metadata.forEach {
@@ -74,6 +76,11 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
         if (type !is KSClassDeclaration) {
             log.error("@Injectable annotation can only be applied to classes", type)
             return null
+        }
+
+        val singleton = type.annotations.singleOrNull { it.shortName.asString() == javax.inject.Singleton::class.simpleName!! }
+        if (singleton != null) {
+            return InjectableType(type, Singleton::class.asClassName())
         }
 
         val injectable = type.annotations.single { it.shortName.asString() == Injectable::class.simpleName!! }
