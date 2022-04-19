@@ -1,7 +1,7 @@
 package org.hertsig.dirk.processor
 
-import com.google.devtools.ksp.containingFile
 import com.google.devtools.ksp.getConstructors
+import com.google.devtools.ksp.isConstructor
 import com.google.devtools.ksp.processing.*
 import com.google.devtools.ksp.symbol.*
 import com.squareup.kotlinpoet.*
@@ -11,6 +11,7 @@ import org.hertsig.dirk.Injectable
 import org.hertsig.dirk.Provides
 import org.hertsig.dirk.scope.Scope
 import org.hertsig.dirk.scope.Singleton
+import org.hertsig.dirk.scope.Unscoped
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
@@ -18,26 +19,33 @@ import javax.annotation.Generated
 import javax.annotation.PostConstruct
 import javax.annotation.PreDestroy
 import javax.inject.Inject
+import kotlin.reflect.KClass
 
 class DirkProcessor(private val log: KSPLogger, private val generator: CodeGenerator) : SymbolProcessor {
     private lateinit var metadata: List<InjectableType>
     private lateinit var scopes: List<ScopeType>
+    private val dirkPackage by lazy { metadata.map { it.type.packageName }.distinct().minByOrNull { it.length }!! }
 
     override fun process(resolver: Resolver): List<KSAnnotated> {
-        val classes = resolver.getSymbolsWithAnnotation(Injectable::class.qualifiedName!!) +
-                resolver.getSymbolsWithAnnotation(javax.inject.Singleton::class.qualifiedName!!).filterIsInstance<KSClassDeclaration>()
-        val functions = resolver.getSymbolsWithAnnotation(Provides::class.qualifiedName!!) +
-                resolver.getSymbolsWithAnnotation(javax.inject.Singleton::class.qualifiedName!!).filterIsInstance<KSFunctionDeclaration>()
-        val files = (classes + functions).mapNotNull { it.containingFile }.distinct()
-        metadata = classes.mapNotNull { classMetaData(it) }.toList() +
-                functions.mapNotNull { functionMetaData(it) }.toList()
+        val injectAnnotated = resolver.getAnnotatedSymbols<KSAnnotated>(Inject::class)
+        val injectConstructors = injectAnnotated.filter { it is KSFunctionDeclaration && it.isConstructor() }
+            .mapNotNull { it.parent as? KSClassDeclaration }
+
+        val classes = (resolver.getAnnotatedSymbols<KSClassDeclaration>(Injectable::class, javax.inject.Singleton::class) + injectConstructors).distinct()
+        val providerFunctions = resolver.getAnnotatedSymbols<KSFunctionDeclaration>(Provides::class, javax.inject.Singleton::class)
+        val injectTargets = injectAnnotated.filterNot { it is KSFunctionDeclaration && it.isConstructor() }
+
+        metadata = (classes.mapNotNull { classMetaData(it) } + providerFunctions.mapNotNull { functionMetaData(it) })
         metadata.forEach {
-            it.dependencies = it.unresolvedDependencies().mapNotNull { p -> resolveDependency(it, p) }
+            it.dependencies = it.unresolvedDependencies().mapNotNull { p -> resolveDependency(it.declaration, p) }
         }
+
         scopes = metadata.map { it.scope }.distinct()
+
+        val files = (classes + providerFunctions).mapNotNull { it.containingFile }.distinct()
         metadata.forEach(::generateFactory)
         if (metadata.isNotEmpty()) {
-            generateDirk(files)
+            generateDirk(files, injectTargets)
         }
         return listOf()
     }
@@ -73,8 +81,9 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
         val metaData = if (type.hasAnnotation(javax.inject.Singleton::class)) {
             InjectableClass(type, constructor, Singleton::class.asClassName())
         } else {
-            val scopeType = type.getAnnotation(Injectable::class)!!.arguments.single().value as KSType
-            InjectableClass(type, constructor, scopeType.declaration.asClassName())
+            val declaredScope = type.getAnnotation(Injectable::class)
+                ?.let { (it.arguments.single().value as KSType).declaration.asClassName() }
+            InjectableClass(type, constructor, declaredScope ?: Unscoped::class.asClassName())
         }
         resolveLifecycle(type, metaData)
         return metaData
@@ -91,10 +100,14 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
     }
 
     private fun resolveDependency(type: KSNode, parameter: KSValueParameter): Dependency? {
-        val assisted = parameter.hasAnnotation(Assisted::class)
         var resolved = parameter.type.resolve()
         if (resolved.isError) {
-            if (parameter.type.toString() == "Dirk") {
+            val dtype = if (parameter.parent is KSPropertySetter) {
+                ((parameter.parent as KSPropertySetter).parent as KSPropertyDeclaration).type
+            } else {
+                parameter.type
+            }
+            if (dtype.toString() == "Dirk") {
                 return DirkInjectable
             }
 
@@ -104,12 +117,13 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
                 return InjectableDependency(parameter, factory.type, true, false, factory)
             }
 
-            log.error("Unable to resolve type for parameter ${parameter.name?.asString()}", parameter)
+            val location = if (parameter.parent is KSPropertySetter) type else parameter
+            log.error("Unable to resolve type for parameter ${parameter.name?.asString()}", location)
             return null
         }
 
         var target = resolved.declaration.asClassName()
-        if (assisted) {
+        if (parameter.hasAnnotation(Assisted::class)) {
             return InjectableDependency(parameter, target, false, true)
         }
 
@@ -132,20 +146,17 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
         return InjectableDependency(parameter, target, provider, false, parameterType)
     }
 
-    private fun generateDirk(files: Sequence<KSFile>) {
-        val packageName = dirkPackage()
-        val file = FileSpec.builder(packageName, "Dirk")
-            .addType(dirkType(packageName))
+    private fun generateDirk(files: List<KSFile>, injectTargets: List<KSAnnotated>) {
+        val file = FileSpec.builder(dirkPackage, "Dirk")
+            .addType(dirkType(dirkPackage, injectTargets))
             .build()
-        val dependencies = Dependencies(true, *files.toList().toTypedArray())
-        generator.createNewFile(dependencies, packageName, "Dirk").bufferedWriter().use {
+        val dependencies = Dependencies(true, *files.toTypedArray())
+        generator.createNewFile(dependencies, dirkPackage, "Dirk").bufferedWriter().use {
             file.writeTo(it)
         }
     }
 
-    private fun dirkPackage() = metadata.map { it.type.packageName }.distinct().minByOrNull { it.length }!!
-
-    private fun dirkType(packageName: String) = TypeSpec.classBuilder("Dirk")
+    private fun dirkType(packageName: String, injectTargets: List<KSAnnotated>) = TypeSpec.classBuilder("Dirk")
             .addGeneratedAnnotation()
             .primaryConstructor(FunSpec.constructorBuilder().addModifiers(KModifier.PRIVATE).build())
             .each(scopes) { scope ->
@@ -168,6 +179,45 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
                 }
 
                 addProperty(factory.build())
+            }
+            .each(injectTargets.groupBy { it.findContainingClass() }.entries) { (owner, injectionPoints) ->
+                addFunction(FunSpec.builder("inject" + owner.simpleName.asString())
+                    .addParameter("instance", owner.asClassName())
+                    .each(injectionPoints) {
+                        when (it) {
+                            is KSPropertySetter -> {
+                                val dep = resolveDependency(it, it.parameter)
+                                if (dep != null) {
+                                    val property = it.parent as KSPropertyDeclaration
+                                    addCode("instance.%N = ", property.simpleName.asString()).dependencyValue(dep, "this").addStatement("")
+                                }
+                            }
+                            is KSPropertyDeclaration -> {
+                                val dep = resolveDependency(it, it.setter!!.parameter)
+                                if (dep != null) {
+                                    addCode("instance.%N = ", it.simpleName.asString()).dependencyValue(dep, "this").addStatement("")
+                                }
+                            }
+                            is KSFunctionDeclaration -> {
+                                addCode("instance.%N(", it.simpleName.asString())
+                                it.parameters.mapNotNull { p -> resolveDependency(it, p) }
+                                    .forEach { p -> dependencyValue(p).addCode(", ") }
+                                addStatement(")")
+                            }
+                            else -> log.error("Invalid @Inject annotation", it)
+                        }
+                    }
+                    .build())
+
+
+//                    .addParameter("instance", "Any")
+//                    .each(params) { p ->
+//                        val dependency = resolveDependency(it, p)
+//                        if (dependency != null) {
+//                            addParameter(p)
+//                            addStatement("%N.inject(%N)", dependency.factoryField(), p.name)
+//                        }
+//                    }
             }
             .addFunction(FunSpec.builder("clearScopes")
                 .addModifiers(KModifier.PRIVATE)
@@ -220,7 +270,7 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
 
         val factory = TypeSpec.classBuilder(type.factoryClass())
             .addGeneratedAnnotation()
-            .addProperty(PropertySpec.builder("dirk", ClassName(dirkPackage(), "Dirk"))
+            .addProperty(PropertySpec.builder("dirk", ClassName(dirkPackage, "Dirk"))
                 .addModifiers(KModifier.PRIVATE)
                 .initializer("dirk")
                 .build())
@@ -242,30 +292,20 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
             }
             factory.primaryConstructor(FunSpec.constructorBuilder()
                 .addModifiers(KModifier.INTERNAL)
-                .addParameter("dirk", ClassName(dirkPackage(), "Dirk"))
+                .addParameter("dirk", ClassName(dirkPackage, "Dirk"))
                 .build())
 
             get.each(type.dependencies.filterIsInstance<InjectableDependency>().filter { it.assisted }) {
                     addParameter(it.name, it.className)
                 }
                 .addCode("return ").apply { type.addInjectable(this) }
-                .each(type.dependencies) {
-                    if (it !is InjectableDependency) {
-                        addCode("%N, ", "dirk")
-                    } else if (it.assisted) {
-                        addCode("%N, ", it.name)
-                    } else if (it.provider) {
-                        addCode("%N, ", it.factory!!.factoryField())
-                    } else {
-                        addCode("%N.get(), ", it.factory!!.factoryField())
-                    }
-                }
+                .each(type.dependencies) { dependencyValue(it).addCode(", ") }
                 .callLifecycle(type)
         } else {
             factory
                 .primaryConstructor(FunSpec.constructorBuilder()
                     .addModifiers(KModifier.INTERNAL)
-                    .addParameter("dirk", ClassName(dirkPackage(), "Dirk"))
+                    .addParameter("dirk", ClassName(dirkPackage, "Dirk"))
                     .addParameter("scope", Scope::class)
                     .build())
                 .addProperty(PropertySpec.builder("scope", Scope::class, KModifier.PRIVATE)
@@ -276,15 +316,7 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
             get.addModifiers(KModifier.OVERRIDE)
                 .beginControlFlow("return %N.getScoped(%T::class)", "scope", type.type)
                 .apply { type.addInjectable(this) }
-                .each(type.dependencies) {
-                    if (it !is InjectableDependency) {
-                        addCode("%N, ", "dirk")
-                    } else if (it.provider) {
-                        addCode("%N, ", it.factory!!.factoryField())
-                    } else {
-                        addCode("%N.get(), ", it.factory!!.factoryField())
-                    }
-                }
+                .each(type.dependencies) { dependencyValue(it).addCode(", ") }
                 .callLifecycle(type)
                 .endControlFlow()
         }
@@ -292,6 +324,17 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
         val getter = get.build()
         return factory.addFunction(getter).build()
     }
+
+    private fun FunSpec.Builder.dependencyValue(it: Dependency, dirkName: String = "dirk") =
+        if (it !is InjectableDependency) {
+            addCode("%L", dirkName)
+        } else if (it.assisted) {
+            addCode("%N", it.name)
+        } else if (it.provider) {
+            addCode("%N", it.factory!!.factoryField())
+        } else {
+            addCode("%N.get()", it.factory!!.factoryField())
+        }
 
     private fun FunSpec.Builder.callLifecycle(type: InjectableType): FunSpec.Builder {
         return if (type.postConstructFunctions.isEmpty() && type.preDestroyFunctions.isEmpty()) {
@@ -310,6 +353,19 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
         .addMember("%S, date = %S", DirkProcessor::class.qualifiedName!!,
             ZonedDateTime.now().truncatedTo(ChronoUnit.MILLIS).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME))
         .build())
+
+    private inline fun <reified T: KSAnnotated> Resolver.getAnnotatedSymbols(vararg annotations: KClass<*>) =
+        annotations.flatMap { getSymbolsWithAnnotation(it.qualifiedName!!) }
+            .filterIsInstance<T>()
+            .distinct()
+
+    private tailrec fun KSNode.findContainingClass(): KSClassDeclaration = when (this) {
+        is KSClassDeclaration -> this
+        is KSFunctionDeclaration -> parent!!.findContainingClass()
+        is KSPropertyDeclaration -> parent!!.findContainingClass()
+        is KSPropertySetter -> parent!!.findContainingClass()
+        else -> throw java.lang.IllegalArgumentException("Unsupported type: $javaClass $this")
+    }
 
     companion object {
         private val destroyHookType = LambdaTypeName.get(returnType = Unit::class.asTypeName())

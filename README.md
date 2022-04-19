@@ -10,9 +10,10 @@ A fully compile time generated DI framework, inspired by Google's Dagger but muc
 * Provider functions
 * Assisted injection
 * Lifecycle handling (Post construct & Pre destroy)
+* Method injection (for those cases where a framework controls instance creation)
 
 ### To do
-* Method injection (for those cases where a framework controls instance creation)
+* Ignore annotation
 * Multi-project support
 * Set & list bindings
 * Optional injection
