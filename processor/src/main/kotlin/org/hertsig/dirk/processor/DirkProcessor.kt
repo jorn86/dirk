@@ -11,6 +11,9 @@ import org.hertsig.dirk.Injectable
 import org.hertsig.dirk.Provider
 import org.hertsig.dirk.scope.Scope
 import org.hertsig.dirk.scope.Singleton
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import javax.annotation.Generated
 import javax.inject.Inject
 
 class DirkProcessor(private val log: KSPLogger, private val generator: CodeGenerator) : SymbolProcessor {
@@ -120,6 +123,7 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
     }
 
     private fun dirkType(packageName: String) = TypeSpec.classBuilder("Dirk")
+        .addGeneratedAnnotation()
         .primaryConstructor(FunSpec.constructorBuilder().addModifiers(KModifier.PRIVATE).build())
         .each(scopes) { scope ->
             addProperty(PropertySpec
@@ -177,6 +181,7 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
         }
 
         val factory = TypeSpec.classBuilder(type.factoryClass())
+            .addGeneratedAnnotation()
             .each(type.dependencies.filter { !it.assisted }.distinctBy { it.factory!!.factoryClass() }) {
                 addProperty(PropertySpec
                     .builder(it.factory!!.factoryField(), it.factory.factoryClass(), KModifier.INTERNAL, KModifier.LATEINIT)
@@ -234,6 +239,12 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
         val getter = get.build()
         return factory.addFunction(getter).build()
     }
+}
+
+    private fun TypeSpec.Builder.addGeneratedAnnotation() = addAnnotation(AnnotationSpec.builder(Generated::class)
+        .addMember("%S, date = %S", DirkProcessor::class.qualifiedName!!,
+            ZonedDateTime.now().truncatedTo(ChronoUnit.MILLIS).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME))
+        .build())
 }
 
 private inline fun <R, T> R.each(elements: Iterable<T>, block: R.(T) -> Unit): R = apply { elements.forEach { block(it) } }
