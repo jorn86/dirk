@@ -8,7 +8,7 @@ import com.squareup.kotlinpoet.*
 import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
 import org.hertsig.dirk.Assisted
 import org.hertsig.dirk.Injectable
-import org.hertsig.dirk.Provider
+import org.hertsig.dirk.Provides
 import org.hertsig.dirk.scope.Scope
 import org.hertsig.dirk.scope.Singleton
 import java.time.LocalDateTime
@@ -23,7 +23,7 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
     override fun process(resolver: Resolver): List<KSAnnotated> {
         val classes = resolver.getSymbolsWithAnnotation(Injectable::class.qualifiedName!!) +
                 resolver.getSymbolsWithAnnotation(javax.inject.Singleton::class.qualifiedName!!).filterIsInstance<KSClassDeclaration>()
-        val functions = resolver.getSymbolsWithAnnotation(Provider::class.qualifiedName!!) +
+        val functions = resolver.getSymbolsWithAnnotation(Provides::class.qualifiedName!!) +
                 resolver.getSymbolsWithAnnotation(javax.inject.Singleton::class.qualifiedName!!).filterIsInstance<KSFunctionDeclaration>()
         val files = (classes + functions).mapNotNull { it.containingFile }.distinct()
         metadata = classes.mapNotNull { classMetaData(it) }.toList() +

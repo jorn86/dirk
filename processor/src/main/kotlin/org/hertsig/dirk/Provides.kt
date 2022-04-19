@@ -6,4 +6,4 @@ import kotlin.reflect.KClass
 
 @Retention(AnnotationRetention.BINARY)
 @Target(AnnotationTarget.FUNCTION)
-annotation class Provider(val scope: KClass<out Scope> = Unscoped::class)
+annotation class Provides(val scope: KClass<out Scope> = Unscoped::class)

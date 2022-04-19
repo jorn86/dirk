@@ -8,7 +8,7 @@ class DbService(name: String, schema: String)
 
 // TODO allow multiple providers for one type as long as all have different signatures
 //@Singleton
-@Provider(Thread::class)
+@Provides(Thread::class)
 fun defaultDb(config: Config) = customDb(config, config.defaultSchema)
 
 //@Provider
