@@ -11,9 +11,12 @@ import org.hertsig.dirk.Injectable
 import org.hertsig.dirk.Provides
 import org.hertsig.dirk.scope.Scope
 import org.hertsig.dirk.scope.Singleton
-import java.time.LocalDateTime
+import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import javax.annotation.Generated
+import javax.annotation.PostConstruct
+import javax.annotation.PreDestroy
 import javax.inject.Inject
 
 class DirkProcessor(private val log: KSPLogger, private val generator: CodeGenerator) : SymbolProcessor {
@@ -44,12 +47,14 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
             log.error("@Provides annotation can only be applied to top level functions", function)
             return null
         }
-        if (function.hasAnnotation(javax.inject.Singleton::class)) {
-            return InjectableFunction(function, Singleton::class.asClassName())
+        val metaData = if (function.hasAnnotation(javax.inject.Singleton::class)) {
+            InjectableFunction(function, Singleton::class.asClassName())
+        } else {
+            val scopeType = function.getAnnotation(Provides::class)!!.arguments.single().value as KSType
+            InjectableFunction(function, scopeType.declaration.asClassName())
         }
-
-        val scopeType = function.getAnnotation(Provider::class)!!.arguments.single().value as KSType
-        return InjectableFunction(function, scopeType.declaration.asClassName())
+        resolveLifecycle(metaData.returnType.declaration as KSClassDeclaration, metaData)
+        return metaData
     }
 
     private fun classMetaData(type: KSAnnotated): InjectableClass? {
@@ -65,12 +70,21 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
             return null
         }
 
-        if (type.hasAnnotation(javax.inject.Singleton::class)) {
-            return InjectableClass(type, constructor, Singleton::class.asClassName())
+        val metaData = if (type.hasAnnotation(javax.inject.Singleton::class)) {
+            InjectableClass(type, constructor, Singleton::class.asClassName())
+        } else {
+            val scopeType = type.getAnnotation(Injectable::class)!!.arguments.single().value as KSType
+            InjectableClass(type, constructor, scopeType.declaration.asClassName())
         }
+        resolveLifecycle(type, metaData)
+        return metaData
+    }
 
-        val scopeType = type.getAnnotation(Injectable::class)!!.arguments.single().value as KSType
-        return InjectableClass(type, constructor, scopeType.declaration.asClassName())
+    private fun resolveLifecycle(type: KSClassDeclaration, metaData: InjectableType) {
+        val functions = type.getAllFunctions()
+        metaData.postConstructFunctions = functions.filter { it.hasAnnotation(PostConstruct::class) }
+            .onEach { if (it.parameters.isNotEmpty()) log.error("PostConstruct functions must not have parameters", it) }
+            .toList()
     }
 
     private fun resolveDependency(type: InjectableType, parameter: KSValueParameter): InjectableDependency? {
@@ -210,7 +224,7 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
                         addCode("%N.get(), ", it.factory!!.factoryField())
                     }
                 }
-                .addStatement(")")
+                .callPostConstructs(type)
         } else {
             factory
                 .primaryConstructor(FunSpec.constructorBuilder()
@@ -226,20 +240,26 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
                 .beginControlFlow("return %N.getScoped(%T::class)", "scope", type.type)
                 .apply { type.addInjectable(this) }
                 .each(type.dependencies) {
-                    if (it.assisted) {
-                        log.error("Cannot directly depend on assisted injected type", type.declaration)
-                    }
                     val code = if (it.provider) "%N, " else "%N.get(), "
                     addCode(code, it.factory!!.factoryField())
                 }
-                .addStatement(")")
+                .callPostConstructs(type)
                 .endControlFlow()
         }
 
         val getter = get.build()
         return factory.addFunction(getter).build()
     }
-}
+
+    private fun FunSpec.Builder.callPostConstructs(type: InjectableType): FunSpec.Builder {
+        return if (type.postConstructFunctions.isEmpty()) {
+            addStatement(")")
+        } else {
+            addCode(")").beginControlFlow(".also")
+                .each(type.postConstructFunctions) { addStatement("it.%N()", it.simpleName.asString()) }
+                .endControlFlow()
+        }
+    }
 
     private fun TypeSpec.Builder.addGeneratedAnnotation() = addAnnotation(AnnotationSpec.builder(Generated::class)
         .addMember("%S, date = %S", DirkProcessor::class.qualifiedName!!,

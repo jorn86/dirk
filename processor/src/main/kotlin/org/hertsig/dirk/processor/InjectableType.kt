@@ -12,6 +12,7 @@ interface InjectableType {
     val declaration: KSDeclaration
     val type: ClassName
     var dependencies: List<InjectableDependency>
+    var postConstructFunctions: List<KSFunctionDeclaration>
     val scope: ScopeType
 
     fun getterName() = "get${type.simpleName}"
@@ -26,10 +27,12 @@ data class InjectableFunction(
     override val declaration: KSFunctionDeclaration,
     private val scopeType: ClassName,
 ): InjectableType {
-    override val type = declaration.returnType!!.resolve().declaration.asClassName()
+    val returnType = declaration.returnType!!.resolve()
+    override val type = returnType.declaration.asClassName()
     private val createFunction = MemberName(declaration.packageName.asString(), declaration.simpleName.asString())
 
     override lateinit var dependencies: List<InjectableDependency>
+    override lateinit var postConstructFunctions: List<KSFunctionDeclaration>
     override val scope = ScopeType(scopeType)
 
     override fun unresolvedDependencies() = declaration.parameters
@@ -42,8 +45,9 @@ data class InjectableClass(
     private val scopeType: ClassName,
 ): InjectableType {
     override val type = declaration.asClassName()
-    override lateinit var dependencies: List<InjectableDependency>
 
+    override lateinit var dependencies: List<InjectableDependency>
+    override lateinit var postConstructFunctions: List<KSFunctionDeclaration>
     override val scope = ScopeType(scopeType)
 
     override fun unresolvedDependencies() = constructor.parameters
