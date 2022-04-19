@@ -1,5 +1,6 @@
-package org.hertsig.app
+package org.hertsig.app.task
 
+import org.hertsig.app.service.Service
 import org.hertsig.dirk.Injectable
 
 @Injectable

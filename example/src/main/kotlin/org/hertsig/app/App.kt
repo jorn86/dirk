@@ -1,5 +1,10 @@
 package org.hertsig.app
 
+import org.hertsig.app.db.DbService
+import org.hertsig.app.di.CustomScope
+import org.hertsig.app.service.Service
+import org.hertsig.app.task.AssistedTaskFactory
+import org.hertsig.app.task.Task
 import org.hertsig.dirk.Injectable
 import javax.inject.Provider
 
@@ -28,6 +33,6 @@ fun main() {
     val dirk = Dirk.create()
     dirk.getApp().run()
     println(dirk.assistedTaskFactory.get("Test"))
-    dirk.clearScopes()
+    dirk.destroy()
     dirk.getApp().run()
 }

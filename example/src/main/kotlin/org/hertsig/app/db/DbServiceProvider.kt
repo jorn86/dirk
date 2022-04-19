@@ -1,5 +1,6 @@
-package org.hertsig.app
+package org.hertsig.app.db
 
+import org.hertsig.app.Config
 import org.hertsig.dirk.Assisted
 import org.hertsig.dirk.Provides
 import org.hertsig.dirk.scope.Thread
@@ -9,6 +10,9 @@ import javax.annotation.PreDestroy
 class DbService(private val name: String, private val schema: String) {
     @PostConstruct fun connect() {
         println("Connecting to $name:$schema")
+    }
+    @PreDestroy fun disconnect() {
+        println("Disconnecting from $name:$schema")
     }
 }
 

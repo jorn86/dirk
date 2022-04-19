@@ -9,9 +9,9 @@ A fully compile time generated DI framework, inspired by Google's Dagger but muc
 * Custom scope (You could use this to build e.g. Request scope)
 * Provider functions
 * Assisted injection
+* Lifecycle handling (Post construct & Pre destroy)
 
 ### To do
-* Lifecycle handling (Post construct & Pre destroy)
 * Method injection (for those cases where a framework controls instance creation)
 * Multi-project support
 * Set & list bindings

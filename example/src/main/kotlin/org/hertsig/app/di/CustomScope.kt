@@ -1,4 +1,4 @@
-package org.hertsig.app
+package org.hertsig.app.di
 
 import org.hertsig.dirk.scope.Scope
 import kotlin.reflect.KClass

@@ -85,6 +85,9 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
         metaData.postConstructFunctions = functions.filter { it.hasAnnotation(PostConstruct::class) }
             .onEach { if (it.parameters.isNotEmpty()) log.error("PostConstruct functions must not have parameters", it) }
             .toList()
+        metaData.preDestroyFunctions = functions.filter { it.hasAnnotation(PreDestroy::class) }
+            .onEach { if (it.parameters.isNotEmpty()) log.error("PreDestroy functions must not have parameters", it) }
+            .toList()
     }
 
     private fun resolveDependency(type: InjectableType, parameter: KSValueParameter): InjectableDependency? {
@@ -126,7 +129,7 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
     }
 
     private fun generateDirk(files: Sequence<KSFile>) {
-        val packageName = metadata.map { it.type.packageName }.distinct().minByOrNull { it.length }!!
+        val packageName = dirkPackage()
         val file = FileSpec.builder(packageName, "Dirk")
             .addType(dirkType(packageName))
             .build()
@@ -136,46 +139,63 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
         }
     }
 
-    private fun dirkType(packageName: String) = TypeSpec.classBuilder("Dirk")
-        .addGeneratedAnnotation()
-        .primaryConstructor(FunSpec.constructorBuilder().addModifiers(KModifier.PRIVATE).build())
-        .each(scopes) { scope ->
-            addProperty(PropertySpec
-                .builder(scope.fieldName, scope.className, KModifier.PRIVATE)
-                .initializer("%T()", scope.className)
-                .build())
-        }
-        .each(metadata) {
-            val factory = PropertySpec.builder(it.factoryField(), it.factoryClass())
-            if (it.anyAssisted()) {
-                factory.initializer("%T()", it.factoryClass())
-            } else {
-                factory.initializer("%T(%N)", it.factoryClass(), it.scope.fieldName)
+    private fun dirkPackage() = metadata.map { it.type.packageName }.distinct().minByOrNull { it.length }!!
 
-                addFunction(FunSpec.builder(it.getterName())
-                    .returns(it.type)
-                    .addCode("return %N.get()", it.factoryField())
+    private fun dirkType(packageName: String) = TypeSpec.classBuilder("Dirk")
+            .addGeneratedAnnotation()
+            .primaryConstructor(FunSpec.constructorBuilder().addModifiers(KModifier.PRIVATE).build())
+            .each(scopes) { scope ->
+                addProperty(PropertySpec
+                    .builder(scope.fieldName, scope.className, KModifier.PRIVATE)
+                    .initializer("%T()", scope.className)
                     .build())
             }
+            .each(metadata) {
+                val factory = PropertySpec.builder(it.factoryField(), it.factoryClass())
+                if (it.anyAssisted()) {
+                    factory.initializer("%T(this)", it.factoryClass())
+                } else {
+                    factory.initializer("%T(this, %N)", it.factoryClass(), it.scope.fieldName)
 
-            addProperty(factory.build())
-        }
-        .addFunction(FunSpec.builder("clearScopes")
-            .each(scopes) { addStatement("%N.clear()", it.fieldName) }
-            .build())
-        .addType(TypeSpec.companionObjectBuilder()
-            .addFunction(FunSpec.builder("create")
-                .returns(ClassName(packageName, "Dirk"))
-                .addStatement("val dirk = Dirk()")
-                .each(metadata) { field ->
-                    field.dependencies.filter { !it.assisted }.forEach {
-                        addStatement("dirk.%N.%N = dirk.%N", field.factoryField(), it.factory!!.factoryField(), it.factory.factoryField())
-                    }
+                    addFunction(FunSpec.builder(it.getterName())
+                        .returns(it.type)
+                        .addCode("return %N.get()", it.factoryField())
+                        .build())
                 }
-                .addStatement("return dirk")
+
+                addProperty(factory.build())
+            }
+            .addFunction(FunSpec.builder("clearScopes")
+                .addModifiers(KModifier.PRIVATE)
+                .each(scopes) { addStatement("%N.clear()", it.fieldName) }
                 .build())
-            .build())
-        .build()
+            .addProperty(PropertySpec.builder("destroyHooks", destroyHooksType)
+                .addModifiers(KModifier.PRIVATE)
+                .initializer("mutableListOf()")
+                .build())
+            .addFunction(FunSpec.builder("destroy")
+                .addStatement("destroyHooks.forEach { it() }")
+                .addStatement("destroyHooks.clear()")
+                .addStatement("clearScopes()")
+                .build())
+            .addFunction(FunSpec.builder("addDestroyHook")
+                .addModifiers(KModifier.INTERNAL)
+                .addParameter("hook", destroyHookType)
+                .addStatement("%N.add(%N)", "destroyHooks", "hook")
+                .build())
+            .addType(TypeSpec.companionObjectBuilder()
+                .addFunction(FunSpec.builder("create")
+                    .returns(ClassName(packageName, "Dirk"))
+                    .addStatement("val dirk = Dirk()")
+                    .each(metadata) { field ->
+                        field.dependencies.filter { !it.assisted }.forEach {
+                            addStatement("dirk.%N.%N = dirk.%N", field.factoryField(), it.factory!!.factoryField(), it.factory.factoryField())
+                        }
+                    }
+                    .addStatement("return dirk")
+                    .build())
+                .build())
+            .build()
 
     private fun generateFactory(type: InjectableType): FileSpec {
         val file = FileSpec.builder(type.factoryClass().packageName, type.factoryClass().simpleName)
@@ -196,6 +216,10 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
 
         val factory = TypeSpec.classBuilder(type.factoryClass())
             .addGeneratedAnnotation()
+            .addProperty(PropertySpec.builder("dirk", ClassName(dirkPackage(), "Dirk"))
+                .addModifiers(KModifier.PRIVATE)
+                .initializer("dirk")
+                .build())
             .each(type.dependencies.filter { !it.assisted }.distinctBy { it.factory!!.factoryClass() }) {
                 addProperty(PropertySpec
                     .builder(it.factory!!.factoryField(), it.factory.factoryClass(), KModifier.INTERNAL, KModifier.LATEINIT)
@@ -209,7 +233,10 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
             if (type.scope.fieldName != "unscopedScope") {
                 log.error("Cannot use assisted injection with scoped injection", type.declaration)
             }
-            factory.primaryConstructor(FunSpec.constructorBuilder().addModifiers(KModifier.INTERNAL).build())
+            factory.primaryConstructor(FunSpec.constructorBuilder()
+                .addModifiers(KModifier.INTERNAL)
+                .addParameter("dirk", ClassName(dirkPackage(), "Dirk"))
+                .build())
 
             get.each(type.dependencies.filter { it.assisted }) {
                     addParameter(it.name, it.className)
@@ -224,11 +251,12 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
                         addCode("%N.get(), ", it.factory!!.factoryField())
                     }
                 }
-                .callPostConstructs(type)
+                .callLifecycle(type)
         } else {
             factory
                 .primaryConstructor(FunSpec.constructorBuilder()
                     .addModifiers(KModifier.INTERNAL)
+                    .addParameter("dirk", ClassName(dirkPackage(), "Dirk"))
                     .addParameter("scope", Scope::class)
                     .build())
                 .addProperty(PropertySpec.builder("scope", Scope::class, KModifier.PRIVATE)
@@ -243,7 +271,7 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
                     val code = if (it.provider) "%N, " else "%N.get(), "
                     addCode(code, it.factory!!.factoryField())
                 }
-                .callPostConstructs(type)
+                .callLifecycle(type)
                 .endControlFlow()
         }
 
@@ -251,12 +279,15 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
         return factory.addFunction(getter).build()
     }
 
-    private fun FunSpec.Builder.callPostConstructs(type: InjectableType): FunSpec.Builder {
-        return if (type.postConstructFunctions.isEmpty()) {
+    private fun FunSpec.Builder.callLifecycle(type: InjectableType): FunSpec.Builder {
+        return if (type.postConstructFunctions.isEmpty() && type.preDestroyFunctions.isEmpty()) {
             addStatement(")")
         } else {
             addCode(")").beginControlFlow(".also")
                 .each(type.postConstructFunctions) { addStatement("it.%N()", it.simpleName.asString()) }
+                .each(type.preDestroyFunctions) {
+                    addStatement("%N.addDestroyHook(it::%N)", "dirk", it.simpleName.asString())
+                }
                 .endControlFlow()
         }
     }
@@ -265,6 +296,11 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
         .addMember("%S, date = %S", DirkProcessor::class.qualifiedName!!,
             ZonedDateTime.now().truncatedTo(ChronoUnit.MILLIS).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME))
         .build())
+
+    companion object {
+        private val destroyHookType = LambdaTypeName.get(returnType = Unit::class.asTypeName())
+        private val destroyHooksType = ClassName("kotlin.collections", "MutableList").parameterizedBy(destroyHookType)
+    }
 }
 
 private inline fun <R, T> R.each(elements: Iterable<T>, block: R.(T) -> Unit): R = apply { elements.forEach { block(it) } }
