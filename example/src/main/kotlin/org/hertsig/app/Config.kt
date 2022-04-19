@@ -5,4 +5,4 @@ import javax.inject.Singleton
 data class Config(val dbName: String, val defaultSchema: String)
 
 @Singleton
-fun config() = Config("name", "schema")
+fun config() = Config("database", "schema")

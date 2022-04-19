@@ -90,10 +90,14 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
             .toList()
     }
 
-    private fun resolveDependency(type: InjectableType, parameter: KSValueParameter): InjectableDependency? {
+    private fun resolveDependency(type: KSNode, parameter: KSValueParameter): Dependency? {
         val assisted = parameter.hasAnnotation(Assisted::class)
         var resolved = parameter.type.resolve()
         if (resolved.isError) {
+            if (parameter.type.toString() == "Dirk") {
+                return DirkInjectable
+            }
+
             // assume it's a (not yet) generated factory
             val factory = metadata.singleOrNull { it.factoryClass().simpleName == parameter.type.toString() }
             if (factory != null) {
@@ -188,7 +192,7 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
                     .returns(ClassName(packageName, "Dirk"))
                     .addStatement("val dirk = Dirk()")
                     .each(metadata) { field ->
-                        field.dependencies.filter { !it.assisted }.forEach {
+                        field.dependencies.filterIsInstance<InjectableDependency>().filter { !it.assisted }.forEach {
                             addStatement("dirk.%N.%N = dirk.%N", field.factoryField(), it.factory!!.factoryField(), it.factory.factoryField())
                         }
                     }
@@ -208,7 +212,7 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
     }
 
     private fun factoryType(type: InjectableType): TypeSpec {
-        type.dependencies.forEach {
+        type.dependencies.filterIsInstance<InjectableDependency>().forEach {
             if (!it.provider && it.factory?.anyAssisted() == true) {
                 log.error("Cannot directly depend on assited injected type, inject the Factory class instead", it.declaration)
             }
@@ -220,7 +224,10 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
                 .addModifiers(KModifier.PRIVATE)
                 .initializer("dirk")
                 .build())
-            .each(type.dependencies.filter { !it.assisted }.distinctBy { it.factory!!.factoryClass() }) {
+            .each(type.dependencies
+                .filterIsInstance<InjectableDependency>()
+                .filter { !it.assisted }
+                .distinctBy { it.factory!!.factoryClass() }) {
                 addProperty(PropertySpec
                     .builder(it.factory!!.factoryField(), it.factory.factoryClass(), KModifier.INTERNAL, KModifier.LATEINIT)
                     .mutable()
@@ -238,12 +245,14 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
                 .addParameter("dirk", ClassName(dirkPackage(), "Dirk"))
                 .build())
 
-            get.each(type.dependencies.filter { it.assisted }) {
+            get.each(type.dependencies.filterIsInstance<InjectableDependency>().filter { it.assisted }) {
                     addParameter(it.name, it.className)
                 }
                 .addCode("return ").apply { type.addInjectable(this) }
                 .each(type.dependencies) {
-                    if (it.assisted) {
+                    if (it !is InjectableDependency) {
+                        addCode("%N, ", "dirk")
+                    } else if (it.assisted) {
                         addCode("%N, ", it.name)
                     } else if (it.provider) {
                         addCode("%N, ", it.factory!!.factoryField())
@@ -268,8 +277,13 @@ class DirkProcessor(private val log: KSPLogger, private val generator: CodeGener
                 .beginControlFlow("return %N.getScoped(%T::class)", "scope", type.type)
                 .apply { type.addInjectable(this) }
                 .each(type.dependencies) {
-                    val code = if (it.provider) "%N, " else "%N.get(), "
-                    addCode(code, it.factory!!.factoryField())
+                    if (it !is InjectableDependency) {
+                        addCode("%N, ", "dirk")
+                    } else if (it.provider) {
+                        addCode("%N, ", it.factory!!.factoryField())
+                    } else {
+                        addCode("%N.get(), ", it.factory!!.factoryField())
+                    }
                 }
                 .callLifecycle(type)
                 .endControlFlow()

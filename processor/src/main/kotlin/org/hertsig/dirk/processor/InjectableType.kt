@@ -11,7 +11,7 @@ import com.squareup.kotlinpoet.MemberName
 interface InjectableType {
     val declaration: KSDeclaration
     val type: ClassName
-    var dependencies: List<InjectableDependency>
+    var dependencies: List<Dependency>
     var postConstructFunctions: List<KSFunctionDeclaration>
     var preDestroyFunctions: List<KSFunctionDeclaration>
     val scope: ScopeType
@@ -20,7 +20,7 @@ interface InjectableType {
     fun factoryClass() = ClassName(type.packageName, "${type.simpleName}Factory")
     fun factoryField() = factoryClass().simpleName.replaceFirstChar { it.lowercase() }
     fun addInjectable(funSpec: FunSpec.Builder): FunSpec.Builder
-    fun anyAssisted() = dependencies.any { it.assisted }
+    fun anyAssisted() = dependencies.filterIsInstance<InjectableDependency>().any { it.assisted }
     fun unresolvedDependencies(): List<KSValueParameter>
 }
 
@@ -32,7 +32,7 @@ data class InjectableFunction(
     override val type = returnType.declaration.asClassName()
     private val createFunction = MemberName(declaration.packageName.asString(), declaration.simpleName.asString())
 
-    override lateinit var dependencies: List<InjectableDependency>
+    override lateinit var dependencies: List<Dependency>
     override lateinit var postConstructFunctions: List<KSFunctionDeclaration>
     override lateinit var preDestroyFunctions: List<KSFunctionDeclaration>
     override val scope = ScopeType(scopeType)
@@ -48,7 +48,7 @@ data class InjectableClass(
 ): InjectableType {
     override val type = declaration.asClassName()
 
-    override lateinit var dependencies: List<InjectableDependency>
+    override lateinit var dependencies: List<Dependency>
     override lateinit var postConstructFunctions: List<KSFunctionDeclaration>
     override lateinit var preDestroyFunctions: List<KSFunctionDeclaration>
     override val scope = ScopeType(scopeType)
