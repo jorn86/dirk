@@ -2,7 +2,6 @@ package org.hertsig.app
 
 import org.hertsig.app.db.DbService
 import org.hertsig.app.di.CustomScope
-import org.hertsig.app.di.InjectorHolder
 import org.hertsig.app.service.Service
 import org.hertsig.app.task.AssistedTaskFactory
 import org.hertsig.app.task.FrameworkClass
@@ -28,7 +27,7 @@ class App(
 
 fun main() {
     val dirk = Dirk.create()
-    dirk.injectInjectorHolder(InjectorHolder)
+//    dirk.injectInjectorHolder(InjectorHolder)
     // or: InjectorHolder.dirk = dirk
     dirk.getApp().run()
     dirk.injectFrameworkClass(FrameworkClass())

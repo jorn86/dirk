@@ -4,6 +4,18 @@ plugins {
     application
 }
 
+repositories {
+    mavenCentral()
+    maven {
+        name = "Github Packages"
+        url = uri("https://maven.pkg.github.com/jorn86/dirk")
+        credentials {
+            username = System.getenv("GITHUB_ACTOR")
+            password = System.getenv("GITHUB_TOKEN")
+        }
+    }
+}
+
 kotlin {
     sourceSets.main {
         kotlin.srcDir("build/generated/ksp/main/kotlin")
@@ -12,8 +24,8 @@ kotlin {
 
 dependencies {
     implementation(kotlin("stdlib-jdk8"))
-    implementation(project(":processor"))
-    ksp(project(":processor"))
+    implementation("org.hertsig.dirk:dirk:0.1.0-SNAPSHOT")
+    ksp("org.hertsig.dirk:dirk:0.1.0-SNAPSHOT")
 }
 
 application {
