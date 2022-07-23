@@ -14,6 +14,7 @@ repositories {
             password = System.getenv("GITHUB_TOKEN")
         }
     }
+    mavenLocal()
 }
 
 kotlin {
@@ -24,8 +25,10 @@ kotlin {
 
 dependencies {
     implementation(kotlin("stdlib-jdk8"))
-    implementation("org.hertsig.dirk:dirk:0.1.0-SNAPSHOT")
-    ksp("org.hertsig.dirk:dirk:0.1.0-SNAPSHOT")
+    implementation("org.hertsig.dirk:dirk:0.1.0")
+    ksp("org.hertsig.dirk:dirk:0.1.0")
+//    implementation(project(":processor"))
+//    ksp(project(":processor"))
 }
 
 application {

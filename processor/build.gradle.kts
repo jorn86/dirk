@@ -37,7 +37,7 @@ publishing {
         create<MavenPublication>("gpr") {
             groupId = "org.hertsig.dirk"
             artifactId = "dirk"
-            version = "0.1.0-SNAPSHOT"
+            version = "0.2.0-SNAPSHOT"
             from(components["java"])
         }
     }
